@@ -1,5 +1,13 @@
 {
   "name": "giveaway-bot",
   "main": "src/index.js",
-  "compatibility_date": "2026-08-18"
+  "compatibility_date": "2026-08-18",
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "giveaway-db",
+      "database_id": "cdce99c6-0977-4e87-b170-37742a66a62c"
+    }
+  ]
 }
