@@ -21,10 +21,9 @@ const COMMANDS = [
       }
     ]
   },
-
   {
     name: "giveaway-end",
-    description: "End and delete a giveaway",
+    description: "End a giveaway",
     options: [
       {
         name: "id",
@@ -34,16 +33,11 @@ const COMMANDS = [
       }
     ]
   },
-
   {
     name: "ticket-close",
     description: "Close the current ticket"
   }
 ];
-
-/* =========================
-   RESPONSE
-========================= */
 
 function json(data, status = 200) {
   return new Response(
@@ -51,22 +45,20 @@ function json(data, status = 200) {
     {
       status,
       headers: {
-        "Content-Type":
-          "application/json"
+        "Content-Type": "application/json"
       }
     }
   );
 }
 
 /* =========================
-   DISCORD SIGNATURE
+   HEX → BYTES
 ========================= */
 
 function hexToBytes(hex) {
-  const bytes =
-    new Uint8Array(
-      hex.length / 2
-    );
+  const bytes = new Uint8Array(
+    hex.length / 2
+  );
 
   for (
     let i = 0;
@@ -75,7 +67,7 @@ function hexToBytes(hex) {
   ) {
     bytes[i / 2] =
       parseInt(
-        hex.substring(i, i + 2),
+        hex.slice(i, i + 2),
         16
       );
   }
@@ -83,7 +75,11 @@ function hexToBytes(hex) {
   return bytes;
 }
 
-async function verifyDiscordRequest(
+/* =========================
+   DISCORD SIGNATURE
+========================= */
+
+async function verifyRequest(
   request,
   env
 ) {
@@ -109,7 +105,7 @@ async function verifyDiscordRequest(
     await request.clone().text();
 
   try {
-    const publicKey =
+    const key =
       await crypto.subtle.importKey(
         "raw",
         hexToBytes(
@@ -122,9 +118,9 @@ async function verifyDiscordRequest(
         ["verify"]
       );
 
-    return await crypto.subtle.verify(
+    return crypto.subtle.verify(
       "Ed25519",
-      publicKey,
+      key,
       hexToBytes(signature),
       new TextEncoder().encode(
         timestamp + body
@@ -132,7 +128,7 @@ async function verifyDiscordRequest(
     );
   } catch (error) {
     console.error(
-      "Signature verification error:",
+      "Signature error:",
       error
     );
 
@@ -141,10 +137,10 @@ async function verifyDiscordRequest(
 }
 
 /* =========================
-   DISCORD BOT API
+   DISCORD API
 ========================= */
 
-async function discordFetch(
+async function discord(
   path,
   env,
   options = {}
@@ -153,14 +149,11 @@ async function discordFetch(
     `${DISCORD_API}${path}`,
     {
       ...options,
-
       headers: {
         Authorization:
           `Bot ${env.DISCORD_TOKEN}`,
-
         "Content-Type":
           "application/json",
-
         ...(options.headers || {})
       }
     }
@@ -172,14 +165,14 @@ async function discordFetch(
 ========================= */
 
 async function registerCommands(env) {
-  const url =
+  const path =
     `/applications/${env.DISCORD_APPLICATION_ID}` +
     `/guilds/${env.DISCORD_GUILD_ID}` +
     `/commands`;
 
   const result =
-    await discordFetch(
-      url,
+    await discord(
+      path,
       env,
       {
         method: "PUT",
@@ -211,37 +204,221 @@ async function registerCommands(env) {
 }
 
 /* =========================
-   GET ORIGINAL INTERACTION
-   MESSAGE
+   GET GIVEAWAY
 ========================= */
 
-async function getOriginalMessage(
-  interaction,
+async function getGiveaway(
+  id,
   env
 ) {
-  const url =
-    `/webhooks/${env.DISCORD_APPLICATION_ID}` +
-    `/${interaction.token}/messages/@original`;
+  return env.DB
+    .prepare(
+      `
+      SELECT *
+      FROM giveaways
+      WHERE id = ?
+      LIMIT 1
+      `
+    )
+    .bind(id)
+    .first();
+}
+
+/* =========================
+   GET CLAIM
+========================= */
+
+async function getClaim(
+  giveawayId,
+  userId,
+  env
+) {
+  return env.DB
+    .prepare(
+      `
+      SELECT *
+      FROM claims
+      WHERE giveaway_id = ?
+      AND user_id = ?
+      LIMIT 1
+      `
+    )
+    .bind(
+      giveawayId,
+      userId
+    )
+    .first();
+}
+
+/* =========================
+   GET TICKET
+========================= */
+
+async function getTicket(
+  giveawayId,
+  userId,
+  env
+) {
+  return env.DB
+    .prepare(
+      `
+      SELECT *
+      FROM tickets
+      WHERE giveaway_id = ?
+      AND user_id = ?
+      AND status = 'open'
+      LIMIT 1
+      `
+    )
+    .bind(
+      giveawayId,
+      userId
+    )
+    .first();
+}
+
+/* =========================
+   CREATE DISCORD TICKET
+========================= */
+
+async function createTicketChannel(
+  interaction,
+  giveaway,
+  userId,
+  username,
+  env
+) {
+  const categoryId =
+    env.DISCORD_TICKET_CATEGORY_ID;
+
+  const staffRoleId =
+    env.DISCORD_STAFF_ROLE_ID;
+
+  if (!categoryId) {
+    throw new Error(
+      "DISCORD_TICKET_CATEGORY_ID belum diatur."
+    );
+  }
+
+  if (!staffRoleId) {
+    throw new Error(
+      "DISCORD_STAFF_ROLE_ID belum diatur."
+    );
+  }
+
+  const guildId =
+    interaction.guild_id;
+
+  const channelName =
+    `claim-${username}`
+      .toLowerCase()
+      .replace(
+        /[^a-z0-9-]/g,
+        "-"
+      )
+      .slice(0, 80);
+
+  const overwrites = [
+    {
+      id: guildId,
+      type: 0,
+      deny: "1024"
+    },
+    {
+      id: userId,
+      type: 1,
+      allow:
+        "68608"
+    },
+    {
+      id: staffRoleId,
+      type: 0,
+      allow:
+        "68608"
+    }
+  ];
 
   const result =
-    await discordFetch(
-      url,
+    await discord(
+      `/guilds/${guildId}/channels`,
       env,
       {
-        method: "GET"
+        method: "POST",
+        body: JSON.stringify({
+          name:
+            channelName,
+          type: 0,
+          parent_id:
+            categoryId,
+          permission_overwrites:
+            overwrites,
+          topic:
+            `Giveaway claim ${giveaway.id} - User ${userId}`
+        })
+      }
+    );
+
+  const text =
+    await result.text();
+
+  let data;
+
+  try {
+    data = JSON.parse(text);
+  } catch {
+    data = {
+      message: text
+    };
+  }
+
+  if (!result.ok) {
+    throw new Error(
+      `Discord create channel error: ${JSON.stringify(data)}`
+    );
+  }
+
+  return data;
+}
+
+/* =========================
+   SEND TICKET MESSAGE
+========================= */
+
+async function sendTicketMessage(
+  channelId,
+  giveaway,
+  userId,
+  env
+) {
+  const result =
+    await discord(
+      `/channels/${channelId}/messages`,
+      env,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          content: [
+            "🎟️ **GIVEAWAY CLAIM TICKET**",
+            "",
+            `👤 <@${userId}>`,
+            `🎁 **Prize:** ${giveaway.prize}`,
+            `🏆 **Winners:** ${giveaway.winners}`,
+            `🆔 **Giveaway:** \`${giveaway.id}\``,
+            "",
+            "Staff akan memproses claim kamu.",
+            "",
+            "Gunakan `/ticket-close` jika ticket sudah selesai."
+          ].join("\n")
+        })
       }
     );
 
   if (!result.ok) {
-    const error =
-      await result.text();
-
-    throw new Error(
-      `Get original message failed: ${error}`
+    console.error(
+      "Ticket message error:",
+      await result.text()
     );
   }
-
-  return result.json();
 }
 
 /* =========================
@@ -254,7 +431,7 @@ async function deleteMessage(
   env
 ) {
   const result =
-    await discordFetch(
+    await discord(
       `/channels/${channelId}/messages/${messageId}`,
       env,
       {
@@ -266,43 +443,14 @@ async function deleteMessage(
     !result.ok &&
     result.status !== 404
   ) {
-    const error =
-      await result.text();
-
     throw new Error(
-      `Delete message failed: ${error}`
+      await result.text()
     );
   }
-
-  return true;
 }
 
 /* =========================
-   FETCH GIVEAWAY
-========================= */
-
-async function getGiveaway(
-  id,
-  env
-) {
-  const result =
-    await env.DB
-      .prepare(
-        `
-        SELECT *
-        FROM giveaways
-        WHERE id = ?
-        LIMIT 1
-        `
-      )
-      .bind(id)
-      .first();
-
-  return result;
-}
-
-/* =========================
-   MAIN WORKER
+   WORKER
 ========================= */
 
 export default {
@@ -312,9 +460,7 @@ export default {
     ctx
   ) {
     const url =
-      new URL(
-        request.url
-      );
+      new URL(request.url);
 
     /* =====================
        HOME
@@ -329,7 +475,9 @@ export default {
         database:
           Boolean(env.DB),
         bot:
-          Boolean(env.DISCORD_TOKEN)
+          Boolean(
+            env.DISCORD_TOKEN
+          )
       });
     }
 
@@ -346,32 +494,26 @@ export default {
           Boolean(
             env.DISCORD_APPLICATION_ID
           ),
-
         guild_id_exists:
           Boolean(
             env.DISCORD_GUILD_ID
           ),
-
         token_exists:
           Boolean(
             env.DISCORD_TOKEN
           ),
-
         public_key_exists:
           Boolean(
             env.DISCORD_PUBLIC_KEY
           ),
-
         staff_role_exists:
           Boolean(
             env.DISCORD_STAFF_ROLE_ID
           ),
-
         ticket_category_exists:
           Boolean(
             env.DISCORD_TICKET_CATEGORY_ID
           ),
-
         database_exists:
           Boolean(env.DB)
       });
@@ -395,7 +537,6 @@ export default {
           success: true,
           commands
         });
-
       } catch (error) {
         return json({
           success: false,
@@ -406,7 +547,7 @@ export default {
     }
 
     /* =====================
-       DISCORD INTERACTIONS
+       DISCORD
     ===================== */
 
     if (
@@ -414,14 +555,14 @@ export default {
       url.pathname === "/interactions"
     ) {
       const valid =
-        await verifyDiscordRequest(
+        await verifyRequest(
           request,
           env
         );
 
       if (!valid) {
         return new Response(
-          "Invalid request signature",
+          "Invalid signature",
           {
             status: 401
           }
@@ -432,7 +573,7 @@ export default {
         await request.json();
 
       /* ===================
-         DISCORD PING
+         PING
       =================== */
 
       if (
@@ -452,11 +593,6 @@ export default {
       ) {
         const command =
           interaction.data?.name;
-
-        console.log(
-          "Command:",
-          command
-        );
 
         /* =================
            GIVEAWAY
@@ -493,16 +629,7 @@ export default {
             interaction.user?.id ||
             "unknown";
 
-          const guildId =
-            interaction.guild_id;
-
-          const channelId =
-            interaction.channel_id;
-
           try {
-            /*
-             * Save giveaway first.
-             */
             await env.DB
               .prepare(
                 `
@@ -522,8 +649,8 @@ export default {
               )
               .bind(
                 giveawayId,
-                guildId,
-                channelId,
+                interaction.guild_id,
+                interaction.channel_id,
                 null,
                 String(prize),
                 Number(winners),
@@ -535,7 +662,7 @@ export default {
 
           } catch (error) {
             console.error(
-              "D1 giveaway error:",
+              "Giveaway D1 error:",
               error
             );
 
@@ -543,104 +670,42 @@ export default {
               type: 4,
               data: {
                 content:
-                  "❌ Gagal membuat giveaway di database."
+                  "❌ Gagal menyimpan giveaway."
               }
             });
           }
 
-          /*
-           * Respond immediately to Discord.
-           */
-          const discordResponse =
-            json({
-              type: 4,
+          return json({
+            type: 4,
+            data: {
+              content: [
+                "🎁 **ROBUX GIVEAWAY**",
+                "",
+                `**Prize:** ${prize}`,
+                `**Winners:** ${winners}`,
+                "",
+                "Klik tombol di bawah untuk claim.",
+                "",
+                `🆔 \`${giveawayId}\``
+              ].join("\n"),
 
-              data: {
-                content: [
-                  "🎁 **ROBUX GIVEAWAY**",
-                  "",
-                  `**Prize:** ${prize}`,
-                  `**Winners:** ${winners}`,
-                  "",
-                  "Klik tombol di bawah untuk claim.",
-                  "",
-                  `ID: \`${giveawayId}\``
-                ].join("\n"),
-
-                components: [
-                  {
-                    type: 1,
-
-                    components: [
-                      {
-                        type: 2,
-                        style: 1,
-                        label:
-                          "🎁 Claim",
-                        custom_id:
-                          `claim:${giveawayId}`
-                      }
-                    ]
-                  }
-                ]
-              }
-            });
-
-          /*
-           * Setelah response dikirim,
-           * ambil message ID dari Discord
-           * dan simpan ke D1.
-           */
-          ctx.waitUntil(
-            (async () => {
-              try {
-                /*
-                 * Tunggu sedikit supaya
-                 * original response tersedia.
-                 */
-                await new Promise(
-                  resolve =>
-                    setTimeout(
-                      resolve,
-                      300
-                    )
-                );
-
-                const message =
-                  await getOriginalMessage(
-                    interaction,
-                    env
-                  );
-
-                await env.DB
-                  .prepare(
-                    `
-                    UPDATE giveaways
-                    SET message_id = ?
-                    WHERE id = ?
-                    `
-                  )
-                  .bind(
-                    message.id,
-                    giveawayId
-                  )
-                  .run();
-
-                console.log(
-                  "Giveaway message saved:",
-                  message.id
-                );
-
-              } catch (error) {
-                console.error(
-                  "Save message ID error:",
-                  error
-                );
-              }
-            })()
-          );
-
-          return discordResponse;
+              components: [
+                {
+                  type: 1,
+                  components: [
+                    {
+                      type: 2,
+                      style: 1,
+                      label:
+                        "🎁 Claim",
+                      custom_id:
+                        `claim:${giveawayId}`
+                    }
+                  ]
+                }
+              ]
+            }
+          });
         }
 
         /* =================
@@ -661,100 +726,59 @@ export default {
                 x.name === "id"
             )?.value;
 
-          if (!giveawayId) {
+          const giveaway =
+            await getGiveaway(
+              giveawayId,
+              env
+            );
+
+          if (!giveaway) {
             return json({
               type: 4,
               data: {
                 content:
-                  "❌ Giveaway ID wajib diisi."
+                  "❌ Giveaway tidak ditemukan."
               }
             });
           }
 
-          try {
-            const giveaway =
-              await getGiveaway(
-                giveawayId,
-                env
-              );
-
-            if (!giveaway) {
-              return json({
-                type: 4,
-                data: {
-                  content:
-                    "❌ Giveaway tidak ditemukan."
-                }
-              });
-            }
-
-            if (
-              giveaway.status !==
-              "active"
-            ) {
-              return json({
-                type: 4,
-                data: {
-                  content:
-                    "❌ Giveaway sudah tidak aktif."
-                }
-              });
-            }
-
-            /*
-             * Hapus pesan giveaway
-             * menggunakan akun BOT.
-             */
-            if (
-              giveaway.message_id &&
-              giveaway.channel_id
-            ) {
+          if (
+            giveaway.message_id
+          ) {
+            try {
               await deleteMessage(
                 giveaway.channel_id,
                 giveaway.message_id,
                 env
               );
+            } catch (error) {
+              console.error(
+                "Delete giveaway error:",
+                error
+              );
             }
-
-            /*
-             * Update database.
-             */
-            await env.DB
-              .prepare(
-                `
-                UPDATE giveaways
-                SET status = ?
-                WHERE id = ?
-                `
-              )
-              .bind(
-                "ended",
-                giveawayId
-              )
-              .run();
-
-            return json({
-              type: 4,
-              data: {
-                content:
-                  `✅ Giveaway \`${giveawayId}\` berhasil diakhiri dan pesannya dihapus oleh bot.`
-              }
-            });
-
-          } catch (error) {
-            console.error(
-              "Giveaway end error:",
-              error
-            );
-
-            return json({
-              type: 4,
-              data: {
-                content:
-                  "❌ Gagal mengakhiri giveaway. Pastikan bot punya **Manage Messages**."
-              }
-            });
           }
+
+          await env.DB
+            .prepare(
+              `
+              UPDATE giveaways
+              SET status = 'ended'
+              WHERE id = ?
+              `
+            )
+            .bind(
+              giveawayId
+            )
+            .run();
+
+          return json({
+            type: 4,
+            data: {
+              content:
+                `✅ Giveaway \`${giveawayId}\` diakhiri.`
+            }
+          });
         }
 
         /* =================
@@ -765,11 +789,54 @@ export default {
           command ===
           "ticket-close"
         ) {
+          const channelId =
+            interaction.channel_id;
+
+          const ticket =
+            await env.DB
+              .prepare(
+                `
+                SELECT *
+                FROM tickets
+                WHERE channel_id = ?
+                AND status = 'open'
+                LIMIT 1
+                `
+              )
+              .bind(
+                channelId
+              )
+              .first();
+
+          if (!ticket) {
+            return json({
+              type: 4,
+              data: {
+                content:
+                  "❌ Channel ini bukan ticket aktif.",
+                flags: 64
+              }
+            });
+          }
+
+          await env.DB
+            .prepare(
+              `
+              UPDATE tickets
+              SET status = 'closed'
+              WHERE id = ?
+              `
+            )
+            .bind(
+              ticket.id
+            )
+            .run();
+
           return json({
             type: 4,
             data: {
               content:
-                "🔒 Sistem ticket-close akan kita pasang setelah Claim selesai."
+                "🔒 Ticket ditutup."
             }
           });
         }
@@ -794,9 +861,6 @@ export default {
           interaction.data
             ?.custom_id || "";
 
-        /*
-         * CLAIM BUTTON
-         */
         if (
           customId.startsWith(
             "claim:"
@@ -806,6 +870,22 @@ export default {
             customId.substring(
               6
             );
+
+          const user =
+            interaction.member
+              ?.user ||
+            interaction.user;
+
+          const userId =
+            user?.id;
+
+          const username =
+            user?.username ||
+            `user-${userId}`;
+
+          /* =================
+             GET GIVEAWAY
+          ================= */
 
           const giveaway =
             await getGiveaway(
@@ -838,20 +918,194 @@ export default {
             });
           }
 
-          return json({
-            type: 4,
-            data: {
-              content: [
-                "🎁 **CLAIM GIVEAWAY**",
-                "",
-                `Prize: **${giveaway.prize}**`,
-                "",
-                "Sistem claim/ticket sedang diproses."
-              ].join("\n"),
+          /* =================
+             CEK CLAIM
+          ================= */
 
-              flags: 64
+          const existingClaim =
+            await getClaim(
+              giveawayId,
+              userId,
+              env
+            );
+
+          if (existingClaim) {
+            const existingTicket =
+              await getTicket(
+                giveawayId,
+                userId,
+                env
+              );
+
+            if (
+              existingTicket
+            ) {
+              return json({
+                type: 4,
+                data: {
+                  content:
+                    `🎟️ Kamu sudah memiliki ticket: <#${existingTicket.channel_id}>`,
+                  flags: 64
+                }
+              });
             }
-          });
+
+            return json({
+              type: 4,
+              data: {
+                content:
+                  "❌ Kamu sudah pernah claim giveaway ini.",
+                flags: 64
+              }
+            });
+          }
+
+          /* =================
+             BUAT CLAIM
+          ================= */
+
+          const claimId =
+            crypto.randomUUID();
+
+          try {
+            await env.DB
+              .prepare(
+                `
+                INSERT INTO claims (
+                  id,
+                  giveaway_id,
+                  user_id,
+                  username,
+                  display_name,
+                  status,
+                  created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                `
+              )
+              .bind(
+                claimId,
+                giveawayId,
+                userId,
+                username,
+                user?.global_name ||
+                  username,
+                "processing",
+                new Date().toISOString()
+              )
+              .run();
+
+          } catch (error) {
+            console.error(
+              "Claim insert error:",
+              error
+            );
+
+            return json({
+              type: 4,
+              data: {
+                content:
+                  "❌ Claim gagal dibuat. Coba lagi.",
+                flags: 64
+              }
+            });
+          }
+
+          /* =================
+             BUAT TICKET
+          ================= */
+
+          try {
+            const ticketChannel =
+              await createTicketChannel(
+                interaction,
+                giveaway,
+                userId,
+                username,
+                env
+              );
+
+            const ticketId =
+              crypto.randomUUID();
+
+            await env.DB
+              .prepare(
+                `
+                INSERT INTO tickets (
+                  id,
+                  giveaway_id,
+                  claim_id,
+                  user_id,
+                  channel_id,
+                  status,
+                  created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                `
+              )
+              .bind(
+                ticketId,
+                giveawayId,
+                claimId,
+                userId,
+                ticketChannel.id,
+                "open",
+                new Date().toISOString()
+              )
+              .run();
+
+            await sendTicketMessage(
+              ticketChannel.id,
+              giveaway,
+              userId,
+              env
+            );
+
+            return json({
+              type: 4,
+              data: {
+                content:
+                  `🎟️ **Ticket berhasil dibuat!**\n\nSilakan masuk ke <#${ticketChannel.id}>.`,
+                flags: 64
+              }
+            });
+
+          } catch (error) {
+            console.error(
+              "Ticket creation error:",
+              error
+            );
+
+            await env.DB
+              .prepare(
+                `
+                UPDATE claims
+                SET status = 'failed'
+                WHERE id = ?
+                `
+              )
+              .bind(
+                claimId
+              )
+              .run();
+
+            return json({
+              type: 4,
+              data: {
+                content: [
+                  "❌ **Gagal membuat ticket.**",
+                  "",
+                  "Pastikan bot mempunyai:",
+                  "• Manage Channels",
+                  "• View Channels",
+                  "• Send Messages",
+                  "",
+                  `Error: \`${error.message}\``
+                ].join("\n"),
+                flags: 64
+              }
+            });
+          }
         }
 
         return json({
