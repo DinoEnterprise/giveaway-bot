@@ -330,34 +330,27 @@ async function createTicketChannel(
     "68608";
 
   const overwrites = [
-    /*
-     * @everyone
-     * tidak bisa melihat ticket
-     */
-    {
-      id: guildId,
-      type: 0,
-      deny: "1024"
-    },
-
-    /*
-     * Claimer
-     */
-    {
-      id: user.id,
-      type: 1,
-      allow: permissions
-    },
-
-    /*
-     * Staff
-     */
-    {
-      id: staffRoleId,
-      type: 0,
-      allow: permissions
-    }
-  ];
+  {
+    id: guildId,
+    type: 0,
+    deny: "1024"
+  },
+  {
+    id: user.id,
+    type: 1,
+    allow: "68608"
+  },
+  {
+    id: staffRoleId,
+    type: 0,
+    allow: "68608"
+  },
+  {
+    id: env.DISCORD_APPLICATION_ID,
+    type: 1,
+    allow: "68608"
+  }
+];
 
   const result =
     await discord(
@@ -433,7 +426,7 @@ async function sendTicketMessage(
               `👤 <@${user.id}>`,
               `🎁 **Prize:** ${giveaway.prize}`,
               `🏆 **Winners:** ${giveaway.winners}`,
-              `🆔 **Giveaway:** \`${giveaway.id}\``,
+              `ID **Giveaway:** \`${giveaway.id}\``,
               "",
               "Claim kamu sudah masuk.",
               "Silakan tunggu staff memproses hadiah.",
