@@ -1,9 +1,14 @@
 const DISCORD_API = "https://discord.com/api/v10";
 
+/* =========================================================
+   COMMANDS
+========================================================= */
+
 const COMMANDS = [
   {
     name: "giveaway",
     description: "Create a Robux giveaway",
+
     options: [
       {
         name: "prize",
@@ -21,9 +26,11 @@ const COMMANDS = [
       }
     ]
   },
+
   {
     name: "giveaway-end",
     description: "End a giveaway",
+
     options: [
       {
         name: "id",
@@ -33,13 +40,18 @@ const COMMANDS = [
       }
     ]
   },
+
   {
     name: "ticket-close",
-    description: "Close the current ticket"
+    description: "Close current ticket"
   }
 ];
 
-function json(data, status = 200) {
+/* =========================================================
+   BASIC RESPONSE
+========================================================= */
+
+function response(data, status = 200) {
   return new Response(
     JSON.stringify(data),
     {
@@ -51,20 +63,39 @@ function json(data, status = 200) {
   );
 }
 
-function hexToBytes(hex) {
-  const bytes = new Uint8Array(hex.length / 2);
+/* =========================================================
+   HEX
+========================================================= */
 
-  for (let i = 0; i < hex.length; i += 2) {
-    bytes[i / 2] = parseInt(
-      hex.slice(i, i + 2),
-      16
+function hexToBytes(hex) {
+  const bytes =
+    new Uint8Array(
+      hex.length / 2
     );
+
+  for (
+    let i = 0;
+    i < hex.length;
+    i += 2
+  ) {
+    bytes[i / 2] =
+      parseInt(
+        hex.substring(i, i + 2),
+        16
+      );
   }
 
   return bytes;
 }
 
-async function verifyRequest(request, env) {
+/* =========================================================
+   VERIFY DISCORD
+========================================================= */
+
+async function verifyDiscord(
+  request,
+  env
+) {
   const signature =
     request.headers.get(
       "X-Signature-Ed25519"
@@ -87,7 +118,7 @@ async function verifyRequest(request, env) {
     await request.clone().text();
 
   try {
-    const key =
+    const publicKey =
       await crypto.subtle.importKey(
         "raw",
         hexToBytes(
@@ -102,7 +133,7 @@ async function verifyRequest(request, env) {
 
     return await crypto.subtle.verify(
       "Ed25519",
-      key,
+      publicKey,
       hexToBytes(signature),
       new TextEncoder().encode(
         timestamp + body
@@ -110,13 +141,17 @@ async function verifyRequest(request, env) {
     );
   } catch (error) {
     console.error(
-      "Signature error:",
+      "VERIFY ERROR:",
       error
     );
 
     return false;
   }
 }
+
+/* =========================================================
+   DISCORD API
+========================================================= */
 
 async function discord(
   path,
@@ -127,18 +162,27 @@ async function discord(
     `${DISCORD_API}${path}`,
     {
       ...options,
+
       headers: {
         Authorization:
           `Bot ${env.DISCORD_TOKEN}`,
+
         "Content-Type":
           "application/json",
+
         ...(options.headers || {})
       }
     }
   );
 }
 
-async function registerCommands(env) {
+/* =========================================================
+   REGISTER
+========================================================= */
+
+async function registerCommands(
+  env
+) {
   const path =
     `/applications/${env.DISCORD_APPLICATION_ID}` +
     `/guilds/${env.DISCORD_GUILD_ID}` +
@@ -150,8 +194,11 @@ async function registerCommands(env) {
       env,
       {
         method: "PUT",
+
         body:
-          JSON.stringify(COMMANDS)
+          JSON.stringify(
+            COMMANDS
+          )
       }
     );
 
@@ -161,7 +208,8 @@ async function registerCommands(env) {
   let data;
 
   try {
-    data = JSON.parse(text);
+    data =
+      JSON.parse(text);
   } catch {
     data = text;
   }
@@ -174,6 +222,10 @@ async function registerCommands(env) {
 
   return data;
 }
+
+/* =========================================================
+   GET GIVEAWAY
+========================================================= */
 
 async function getGiveaway(
   id,
@@ -191,6 +243,10 @@ async function getGiveaway(
     .bind(id)
     .first();
 }
+
+/* =========================================================
+   GET CLAIM
+========================================================= */
 
 async function getClaim(
   giveawayId,
@@ -214,11 +270,11 @@ async function getClaim(
     .first();
 }
 
-/* =========================
-   CREATE TICKET
-========================= */
+/* =========================================================
+   CREATE TICKET CHANNEL
+========================================================= */
 
-async function createTicket(
+async function createTicketChannel(
   interaction,
   giveaway,
   user,
@@ -235,13 +291,13 @@ async function createTicket(
 
   if (!categoryId) {
     throw new Error(
-      "DISCORD_TICKET_CATEGORY_ID tidak ditemukan"
+      "DISCORD_TICKET_CATEGORY_ID kosong"
     );
   }
 
   if (!staffRoleId) {
     throw new Error(
-      "DISCORD_STAFF_ROLE_ID tidak ditemukan"
+      "DISCORD_STAFF_ROLE_ID kosong"
     );
   }
 
@@ -256,89 +312,105 @@ async function createTicket(
         /[^a-z0-9-]/g,
         "-"
       )
-      .slice(0, 70);
+      .slice(0, 60);
 
   /*
-   * Permission:
+   * Discord permission bits:
    *
-   * @everyone
-   * DENY View Channel
+   * VIEW_CHANNEL          = 1024
+   * SEND_MESSAGES         = 2048
+   * READ_MESSAGE_HISTORY  = 65536
    *
-   * User
-   * ALLOW View Channel,
-   * Send Messages,
-   * Read Message History
-   *
-   * Staff
-   * ALLOW View Channel,
-   * Send Messages,
-   * Read Message History
+   * Total:
+   * 1024 + 2048 + 65536
+   * = 68608
    */
 
-  const permissionOverwrites = [
+  const permissions =
+    "68608";
+
+  const overwrites = [
+    /*
+     * @everyone
+     * tidak bisa melihat ticket
+     */
     {
       id: guildId,
       type: 0,
       deny: "1024"
     },
+
+    /*
+     * Claimer
+     */
     {
       id: user.id,
       type: 1,
-      allow:
-        "68608"
+      allow: permissions
     },
+
+    /*
+     * Staff
+     */
     {
       id: staffRoleId,
       type: 0,
-      allow:
-        "68608"
+      allow: permissions
     }
   ];
 
-  const response =
+  const result =
     await discord(
       `/guilds/${guildId}/channels`,
       env,
       {
         method: "POST",
-        body: JSON.stringify({
-          name:
-            `claim-${safeName}`,
-          type: 0,
-          parent_id:
-            categoryId,
-          permission_overwrites:
-            permissionOverwrites,
-          topic:
-            `Giveaway ${giveaway.id} | User ${user.id}`
-        })
+
+        body:
+          JSON.stringify({
+            name:
+              `claim-${safeName}`,
+
+            type: 0,
+
+            parent_id:
+              categoryId,
+
+            permission_overwrites:
+              overwrites,
+
+            topic:
+              `Giveaway ${giveaway.id} | User ${user.id}`
+          })
       }
     );
 
   const text =
-    await response.text();
+    await result.text();
 
-  let channel;
+  let data;
 
   try {
-    channel =
+    data =
       JSON.parse(text);
   } catch {
-    throw new Error(text);
+    data = {
+      message: text
+    };
   }
 
-  if (!response.ok) {
+  if (!result.ok) {
     throw new Error(
-      JSON.stringify(channel)
+      `Discord ${result.status}: ${JSON.stringify(data)}`
     );
   }
 
-  return channel;
+  return data;
 }
 
-/* =========================
+/* =========================================================
    SEND TICKET MESSAGE
-========================= */
+========================================================= */
 
 async function sendTicketMessage(
   channelId,
@@ -346,54 +418,93 @@ async function sendTicketMessage(
   user,
   env
 ) {
-  const response =
+  const result =
     await discord(
       `/channels/${channelId}/messages`,
       env,
       {
         method: "POST",
-        body: JSON.stringify({
-          content: [
-            "🎟️ **ROBUX GIVEAWAY CLAIM**",
-            "",
-            `👤 <@${user.id}>`,
-            `🎁 **Prize:** ${giveaway.prize}`,
-            `🏆 **Winners:** ${giveaway.winners}`,
-            `🆔 **Giveaway:** \`${giveaway.id}\``,
-            "",
-            "Halo! Claim kamu sudah masuk.",
-            "Silakan tunggu staff memproses hadiah.",
-            "",
-            "🔒 Staff dapat menggunakan `/ticket-close` untuk menutup ticket."
-          ].join("\n")
-        })
+
+        body:
+          JSON.stringify({
+            content: [
+              "🎟️ **ROBUX GIVEAWAY CLAIM**",
+              "",
+              `👤 <@${user.id}>`,
+              `🎁 **Prize:** ${giveaway.prize}`,
+              `🏆 **Winners:** ${giveaway.winners}`,
+              `🆔 **Giveaway:** \`${giveaway.id}\``,
+              "",
+              "Claim kamu sudah masuk.",
+              "Silakan tunggu staff memproses hadiah.",
+              "",
+              "Staff dapat menggunakan `/ticket-close` untuk menutup ticket."
+            ].join("\n")
+          })
       }
     );
 
-  if (!response.ok) {
-    console.error(
-      "Ticket message error:",
-      await response.text()
+  if (!result.ok) {
+    throw new Error(
+      `Send ticket message failed: ${await result.text()}`
     );
   }
 }
 
-/* =========================
+/* =========================================================
+   EDIT ORIGINAL INTERACTION RESPONSE
+========================================================= */
+
+async function editInteraction(
+  interaction,
+  env,
+  data
+) {
+  const path =
+    `/webhooks/${env.DISCORD_APPLICATION_ID}` +
+    `/${interaction.token}` +
+    `/messages/@original`;
+
+  const result =
+    await discord(
+      path,
+      env,
+      {
+        method: "PATCH",
+
+        body:
+          JSON.stringify(data)
+      }
+    );
+
+  if (!result.ok) {
+    console.error(
+      "EDIT INTERACTION:",
+      await result.text()
+    );
+  }
+
+  return result;
+}
+
+/* =========================================================
    DELETE GIVEAWAY MESSAGE
-========================= */
+========================================================= */
 
 async function deleteGiveawayMessage(
   giveaway,
   env
 ) {
   if (
-    !giveaway.message_id ||
-    !giveaway.channel_id
+    !giveaway.channel_id ||
+    !giveaway.message_id
   ) {
-    return;
+    throw new Error(
+      "message_id giveaway belum tersimpan"
+    );
   }
 
-  const response =
+  const result =
     await discord(
       `/channels/${giveaway.channel_id}/messages/${giveaway.message_id}`,
       env,
@@ -403,18 +514,18 @@ async function deleteGiveawayMessage(
     );
 
   if (
-    !response.ok &&
-    response.status !== 404
+    !result.ok &&
+    result.status !== 404
   ) {
     throw new Error(
-      await response.text()
+      `Delete failed: ${await result.text()}`
     );
   }
 }
 
-/* =========================
+/* =========================================================
    WORKER
-========================= */
+========================================================= */
 
 export default {
   async fetch(
@@ -423,66 +534,76 @@ export default {
     ctx
   ) {
     const url =
-      new URL(request.url);
+      new URL(
+        request.url
+      );
 
-    /* =====================
+    /* =====================================================
        HOME
-    ===================== */
+    ===================================================== */
 
     if (
       request.method === "GET" &&
       url.pathname === "/"
     ) {
-      return json({
+      return response({
         status: "online",
         database:
           Boolean(env.DB),
         bot:
-          Boolean(env.DISCORD_TOKEN)
+          Boolean(
+            env.DISCORD_TOKEN
+          )
       });
     }
 
-    /* =====================
+    /* =====================================================
        DEBUG
-    ===================== */
+    ===================================================== */
 
     if (
       request.method === "GET" &&
       url.pathname === "/debug"
     ) {
-      return json({
+      return response({
         application_id_exists:
           Boolean(
             env.DISCORD_APPLICATION_ID
           ),
+
         guild_id_exists:
           Boolean(
             env.DISCORD_GUILD_ID
           ),
+
         token_exists:
           Boolean(
             env.DISCORD_TOKEN
           ),
+
         public_key_exists:
           Boolean(
             env.DISCORD_PUBLIC_KEY
           ),
+
         staff_role_exists:
           Boolean(
             env.DISCORD_STAFF_ROLE_ID
           ),
+
         ticket_category_exists:
           Boolean(
             env.DISCORD_TICKET_CATEGORY_ID
           ),
+
         database_exists:
           Boolean(env.DB)
       });
     }
 
-    /* =====================
+    /* =====================================================
        REGISTER
-    ===================== */
+    ===================================================== */
 
     if (
       request.method === "GET" &&
@@ -494,12 +615,13 @@ export default {
             env
           );
 
-        return json({
+        return response({
           success: true,
           commands
         });
+
       } catch (error) {
-        return json({
+        return response({
           success: false,
           error:
             error.message
@@ -507,16 +629,16 @@ export default {
       }
     }
 
-    /* =====================
-       DISCORD INTERACTIONS
-    ===================== */
+    /* =====================================================
+       DISCORD INTERACTION
+    ===================================================== */
 
     if (
       request.method === "POST" &&
       url.pathname === "/interactions"
     ) {
       const valid =
-        await verifyRequest(
+        await verifyDiscord(
           request,
           env
         );
@@ -533,21 +655,21 @@ export default {
       const interaction =
         await request.json();
 
-      /* ===================
+      /* ===================================================
          PING
-      =================== */
+      =================================================== */
 
       if (
         interaction.type === 1
       ) {
-        return json({
+        return response({
           type: 1
         });
       }
 
-      /* ===================
+      /* ===================================================
          SLASH COMMAND
-      =================== */
+      =================================================== */
 
       if (
         interaction.type === 2
@@ -555,9 +677,9 @@ export default {
         const command =
           interaction.data?.name;
 
-        /* =================
-           GIVEAWAY
-        ================= */
+        /* ===============================================
+           /giveaway
+        =============================================== */
 
         if (
           command ===
@@ -570,26 +692,28 @@ export default {
           const prize =
             options.find(
               x =>
-                x.name === "prize"
+                x.name ===
+                "prize"
             )?.value;
 
           const winners =
             options.find(
               x =>
-                x.name === "winners"
+                x.name ===
+                "winners"
             )?.value;
 
           const giveawayId =
             `GW-${crypto.randomUUID()}`;
 
-          const userId =
+          const creator =
             interaction.member
               ?.user?.id ||
             interaction.user?.id ||
             "unknown";
 
           /*
-           * Simpan ke D1.
+           * Simpan giveaway
            */
           try {
             await env.DB
@@ -617,30 +741,32 @@ export default {
                 String(prize),
                 Number(winners),
                 "active",
-                userId,
+                creator,
                 new Date().toISOString()
               )
               .run();
+
           } catch (error) {
             console.error(
-              "D1 error:",
+              "GIVEAWAY D1 ERROR:",
               error
             );
 
-            return json({
+            return response({
               type: 4,
               data: {
                 content:
-                  "❌ Database error."
+                  "❌ Gagal menyimpan giveaway."
               }
             });
           }
 
           /*
-           * ACK LANGSUNG.
+           * Response langsung.
            */
-          return json({
+          return response({
             type: 4,
+
             data: {
               content: [
                 "🎁 **ROBUX GIVEAWAY**",
@@ -656,6 +782,7 @@ export default {
               components: [
                 {
                   type: 1,
+
                   components: [
                     {
                       type: 2,
@@ -672,9 +799,9 @@ export default {
           });
         }
 
-        /* =================
-           GIVEAWAY END
-        ================= */
+        /* ===============================================
+           /giveaway-end
+        =============================================== */
 
         if (
           command ===
@@ -691,9 +818,7 @@ export default {
             )?.value;
 
           /*
-           * CEK DULU.
-           * Jangan melakukan API
-           * sebelum Discord menerima ACK.
+           * Ambil data.
            */
           const giveaway =
             await getGiveaway(
@@ -702,7 +827,7 @@ export default {
             );
 
           if (!giveaway) {
-            return json({
+            return response({
               type: 4,
               data: {
                 content:
@@ -712,20 +837,19 @@ export default {
           }
 
           /*
-           * ACK LANGSUNG.
+           * DEFER
+           *
+           * Discord langsung tahu
+           * kita sedang memproses.
            */
-          const response =
-            json({
-              type: 4,
-              data: {
-                content:
-                  `✅ Giveaway \`${giveawayId}\` sedang diakhiri...`
-              }
+          const deferred =
+            response({
+              type: 5
             });
 
           /*
-           * Semua pekerjaan berat
-           * dilakukan setelah ACK.
+           * Setelah response dikirim,
+           * proses penghapusan.
            */
           ctx.waitUntil(
             (async () => {
@@ -748,34 +872,39 @@ export default {
                   )
                   .run();
 
+                await editInteraction(
+                  interaction,
+                  env,
+                  {
+                    content:
+                      `✅ Giveaway \`${giveawayId}\` berhasil diakhiri dan pesan giveaway dihapus.`
+                  }
+                );
+
               } catch (error) {
                 console.error(
-                  "Giveaway end error:",
+                  "GIVEAWAY END ERROR:",
                   error
                 );
 
-                await env.DB
-                  .prepare(
-                    `
-                    UPDATE giveaways
-                    SET status = 'ended'
-                    WHERE id = ?
-                    `
-                  )
-                  .bind(
-                    giveawayId
-                  )
-                  .run();
+                await editInteraction(
+                  interaction,
+                  env,
+                  {
+                    content:
+                      `❌ Gagal menghapus giveaway.\n\n\`${error.message}\``
+                  }
+                );
               }
             })()
           );
 
-          return response;
+          return deferred;
         }
 
-        /* =================
-           TICKET CLOSE
-        ================= */
+        /* ===============================================
+           /ticket-close
+        =============================================== */
 
         if (
           command ===
@@ -784,51 +913,93 @@ export default {
           const channelId =
             interaction.channel_id;
 
-          /*
-           * ACK DULU.
-           */
-          const response =
-            json({
-              type: 4,
+          const deferred =
+            response({
+              type: 5,
               data: {
-                content:
-                  "🔒 Ticket sedang ditutup..."
+                flags: 64
               }
             });
 
           ctx.waitUntil(
             (async () => {
               try {
+                const ticket =
+                  await env.DB
+                    .prepare(
+                      `
+                      SELECT *
+                      FROM tickets
+                      WHERE channel_id = ?
+                      AND status = 'open'
+                      LIMIT 1
+                      `
+                    )
+                    .bind(
+                      channelId
+                    )
+                    .first();
+
+                if (!ticket) {
+                  await editInteraction(
+                    interaction,
+                    env,
+                    {
+                      content:
+                        "❌ Channel ini bukan ticket aktif."
+                    }
+                  );
+
+                  return;
+                }
+
                 await env.DB
                   .prepare(
                     `
                     UPDATE tickets
                     SET status = 'closed'
-                    WHERE channel_id = ?
-                    AND status = 'open'
+                    WHERE id = ?
                     `
                   )
                   .bind(
-                    channelId
+                    ticket.id
                   )
                   .run();
 
+                await editInteraction(
+                  interaction,
+                  env,
+                  {
+                    content:
+                      "🔒 Ticket berhasil ditutup."
+                  }
+                );
+
               } catch (error) {
                 console.error(
-                  "Ticket close error:",
+                  "TICKET CLOSE ERROR:",
                   error
+                );
+
+                await editInteraction(
+                  interaction,
+                  env,
+                  {
+                    content:
+                      `❌ ${error.message}`
+                  }
                 );
               }
             })()
           );
 
-          return response;
+          return deferred;
         }
       }
 
-      /* =====================
-         BUTTON INTERACTION
-      ===================== */
+      /* ===================================================
+         BUTTON
+      =================================================== */
 
       if (
         interaction.type === 3
@@ -837,9 +1008,9 @@ export default {
           interaction.data
             ?.custom_id || "";
 
-        /* ===================
+        /* ===============================================
            CLAIM
-        =================== */
+        =============================================== */
 
         if (
           customId.startsWith(
@@ -847,7 +1018,9 @@ export default {
           )
         ) {
           const giveawayId =
-            customId.slice(6);
+            customId.substring(
+              6
+            );
 
           const user =
             interaction.member
@@ -858,7 +1031,7 @@ export default {
             user?.id;
 
           /*
-           * CEK GIVEAWAY.
+           * Cari giveaway.
            */
           const giveaway =
             await getGiveaway(
@@ -867,7 +1040,7 @@ export default {
             );
 
           if (!giveaway) {
-            return json({
+            return response({
               type: 4,
               data: {
                 content:
@@ -881,7 +1054,7 @@ export default {
             giveaway.status !==
             "active"
           ) {
-            return json({
+            return response({
               type: 4,
               data: {
                 content:
@@ -892,7 +1065,7 @@ export default {
           }
 
           /*
-           * CEK CLAIM.
+           * Cek claim lama.
            */
           const existing =
             await getClaim(
@@ -902,7 +1075,7 @@ export default {
             );
 
           if (existing) {
-            return json({
+            return response({
               type: 4,
               data: {
                 content:
@@ -913,32 +1086,36 @@ export default {
           }
 
           /*
-           * ==================
-           * ACK SECEPATNYA
-           * ==================
+           * =============================================
+           * DEFERRED RESPONSE
+           * =============================================
+           *
+           * Discord langsung menerima ACK.
            */
-
-          const response =
-            json({
-              type: 4,
+          const deferred =
+            response({
+              type: 5,
               data: {
-                content:
-                  "⏳ **Claim diterima!**\n\n🎟️ Ticket sedang dibuat...",
                 flags: 64
               }
             });
 
           /*
-           * SEMUA PROSES BERAT
-           * SETELAH ACK.
+           * Semua proses ticket
+           * setelah ACK.
            */
-
           ctx.waitUntil(
             (async () => {
               const claimId =
                 crypto.randomUUID();
 
               try {
+                console.log(
+                  "CLAIM START:",
+                  giveawayId,
+                  userId
+                );
+
                 /*
                  * INSERT CLAIM
                  */
@@ -971,16 +1148,25 @@ export default {
                   )
                   .run();
 
+                console.log(
+                  "CLAIM SAVED"
+                );
+
                 /*
-                 * CREATE TICKET
+                 * CREATE CHANNEL
                  */
                 const channel =
-                  await createTicket(
+                  await createTicketChannel(
                     interaction,
                     giveaway,
                     user,
                     env
                   );
+
+                console.log(
+                  "CHANNEL CREATED:",
+                  channel.id
+                );
 
                 /*
                  * SAVE TICKET
@@ -1012,7 +1198,7 @@ export default {
                   .run();
 
                 /*
-                 * SEND MESSAGE
+                 * MESSAGE
                  */
                 await sendTicketMessage(
                   channel.id,
@@ -1021,9 +1207,36 @@ export default {
                   env
                 );
 
+                /*
+                 * UPDATE CLAIM
+                 */
+                await env.DB
+                  .prepare(
+                    `
+                    UPDATE claims
+                    SET status = 'completed'
+                    WHERE id = ?
+                    `
+                  )
+                  .bind(
+                    claimId
+                  )
+                  .run();
+
+                /*
+                 * EDIT DISCORD RESPONSE
+                 */
+                await editInteraction(
+                  interaction,
+                  env,
+                  {
+                    content:
+                      `🎟️ **Ticket berhasil dibuat!**\n\nSilakan masuk ke <#${channel.id}>.`
+                  }
+                );
+
                 console.log(
-                  "Ticket created:",
-                  channel.id
+                  "CLAIM COMPLETE"
                 );
 
               } catch (error) {
@@ -1046,15 +1259,24 @@ export default {
                     )
                     .run();
                 } catch {}
+
+                await editInteraction(
+                  interaction,
+                  env,
+                  {
+                    content:
+                      `❌ **Gagal membuat ticket.**\n\n\`${error.message}\``
+                  }
+                );
               }
             })()
           );
 
-          return response;
+          return deferred;
         }
       }
 
-      return json({
+      return response({
         type: 4,
         data: {
           content:
