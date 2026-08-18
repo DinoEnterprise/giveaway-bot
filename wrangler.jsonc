@@ -1,0 +1,14 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "giveaway-bot",
+  "main": "src/index.js",
+  "compatibility_date": "2026-08-18",
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "giveaway-db",
+      "database_id": "GANTI_DENGAN_DATABASE_ID"
+    }
+  ]
+}
