@@ -21,38 +21,72 @@ const COMMANDS = [
       }
     ]
   },
+
   {
     name: "giveaway-end",
-    description: "End a giveaway"
+    description: "End and delete a giveaway",
+    options: [
+      {
+        name: "id",
+        description: "Giveaway ID",
+        type: 3,
+        required: true
+      }
+    ]
   },
+
   {
     name: "ticket-close",
-    description: "Close a ticket"
+    description: "Close the current ticket"
   }
 ];
 
-function response(data) {
+/* =========================
+   RESPONSE
+========================= */
+
+function json(data, status = 200) {
   return new Response(
     JSON.stringify(data),
     {
-      status: 200,
+      status,
       headers: {
-        "Content-Type": "application/json"
+        "Content-Type":
+          "application/json"
       }
     }
   );
 }
 
-function interactionResponse(content) {
-  return response({
-    type: 4,
-    data: {
-      content
-    }
-  });
+/* =========================
+   DISCORD SIGNATURE
+========================= */
+
+function hexToBytes(hex) {
+  const bytes =
+    new Uint8Array(
+      hex.length / 2
+    );
+
+  for (
+    let i = 0;
+    i < hex.length;
+    i += 2
+  ) {
+    bytes[i / 2] =
+      parseInt(
+        hex.substring(i, i + 2),
+        16
+      );
+  }
+
+  return bytes;
 }
 
-async function verify(request, env) {
+async function verifyDiscordRequest(
+  request,
+  env
+) {
   const signature =
     request.headers.get(
       "X-Signature-Ed25519"
@@ -65,7 +99,8 @@ async function verify(request, env) {
 
   if (
     !signature ||
-    !timestamp
+    !timestamp ||
+    !env.DISCORD_PUBLIC_KEY
   ) {
     return false;
   }
@@ -74,7 +109,7 @@ async function verify(request, env) {
     await request.clone().text();
 
   try {
-    const key =
+    const publicKey =
       await crypto.subtle.importKey(
         "raw",
         hexToBytes(
@@ -89,96 +124,224 @@ async function verify(request, env) {
 
     return await crypto.subtle.verify(
       "Ed25519",
-      key,
+      publicKey,
       hexToBytes(signature),
       new TextEncoder().encode(
         timestamp + body
       )
     );
   } catch (error) {
-    console.error(error);
+    console.error(
+      "Signature verification error:",
+      error
+    );
+
     return false;
   }
 }
 
-function hexToBytes(hex) {
-  const result =
-    new Uint8Array(
-      hex.length / 2
-    );
+/* =========================
+   DISCORD BOT API
+========================= */
 
-  for (
-    let i = 0;
-    i < hex.length;
-    i += 2
-  ) {
-    result[i / 2] =
-      parseInt(
-        hex.substring(
-          i,
-          i + 2
-        ),
-        16
-      );
-  }
+async function discordFetch(
+  path,
+  env,
+  options = {}
+) {
+  return fetch(
+    `${DISCORD_API}${path}`,
+    {
+      ...options,
 
-  return result;
-}
-
-async function registerCommands(env) {
-  const url =
-    `${DISCORD_API}/applications/` +
-    `${env.DISCORD_APPLICATION_ID}/guilds/` +
-    `${env.DISCORD_GUILD_ID}/commands`;
-
-  const result =
-    await fetch(url, {
-      method: "PUT",
       headers: {
         Authorization:
           `Bot ${env.DISCORD_TOKEN}`,
+
         "Content-Type":
-          "application/json"
-      },
-      body:
-        JSON.stringify(
-          COMMANDS
-        )
-    });
+          "application/json",
+
+        ...(options.headers || {})
+      }
+    }
+  );
+}
+
+/* =========================
+   REGISTER COMMANDS
+========================= */
+
+async function registerCommands(env) {
+  const url =
+    `/applications/${env.DISCORD_APPLICATION_ID}` +
+    `/guilds/${env.DISCORD_GUILD_ID}` +
+    `/commands`;
+
+  const result =
+    await discordFetch(
+      url,
+      env,
+      {
+        method: "PUT",
+        body:
+          JSON.stringify(
+            COMMANDS
+          )
+      }
+    );
+
+  const text =
+    await result.text();
+
+  let data;
+
+  try {
+    data = JSON.parse(text);
+  } catch {
+    data = text;
+  }
+
+  if (!result.ok) {
+    throw new Error(
+      JSON.stringify(data)
+    );
+  }
+
+  return data;
+}
+
+/* =========================
+   GET ORIGINAL INTERACTION
+   MESSAGE
+========================= */
+
+async function getOriginalMessage(
+  interaction,
+  env
+) {
+  const url =
+    `/webhooks/${env.DISCORD_APPLICATION_ID}` +
+    `/${interaction.token}/messages/@original`;
+
+  const result =
+    await discordFetch(
+      url,
+      env,
+      {
+        method: "GET"
+      }
+    );
+
+  if (!result.ok) {
+    const error =
+      await result.text();
+
+    throw new Error(
+      `Get original message failed: ${error}`
+    );
+  }
 
   return result.json();
 }
 
+/* =========================
+   DELETE MESSAGE
+========================= */
+
+async function deleteMessage(
+  channelId,
+  messageId,
+  env
+) {
+  const result =
+    await discordFetch(
+      `/channels/${channelId}/messages/${messageId}`,
+      env,
+      {
+        method: "DELETE"
+      }
+    );
+
+  if (
+    !result.ok &&
+    result.status !== 404
+  ) {
+    const error =
+      await result.text();
+
+    throw new Error(
+      `Delete message failed: ${error}`
+    );
+  }
+
+  return true;
+}
+
+/* =========================
+   FETCH GIVEAWAY
+========================= */
+
+async function getGiveaway(
+  id,
+  env
+) {
+  const result =
+    await env.DB
+      .prepare(
+        `
+        SELECT *
+        FROM giveaways
+        WHERE id = ?
+        LIMIT 1
+        `
+      )
+      .bind(id)
+      .first();
+
+  return result;
+}
+
+/* =========================
+   MAIN WORKER
+========================= */
+
 export default {
   async fetch(
     request,
-    env
+    env,
+    ctx
   ) {
     const url =
       new URL(
         request.url
       );
 
-    /* HOME */
+    /* =====================
+       HOME
+    ===================== */
 
     if (
       request.method === "GET" &&
       url.pathname === "/"
     ) {
-      return response({
+      return json({
         status: "online",
         database:
-          Boolean(env.DB)
+          Boolean(env.DB),
+        bot:
+          Boolean(env.DISCORD_TOKEN)
       });
     }
 
-    /* DEBUG */
+    /* =====================
+       DEBUG
+    ===================== */
 
     if (
       request.method === "GET" &&
       url.pathname === "/debug"
     ) {
-      return response({
+      return json({
         application_id_exists:
           Boolean(
             env.DISCORD_APPLICATION_ID
@@ -214,7 +377,9 @@ export default {
       });
     }
 
-    /* REGISTER COMMANDS */
+    /* =====================
+       REGISTER
+    ===================== */
 
     if (
       request.method === "GET" &&
@@ -226,13 +391,13 @@ export default {
             env
           );
 
-        return response({
+        return json({
           success: true,
           commands
         });
 
       } catch (error) {
-        return response({
+        return json({
           success: false,
           error:
             error.message
@@ -240,21 +405,23 @@ export default {
       }
     }
 
-    /* DISCORD */
+    /* =====================
+       DISCORD INTERACTIONS
+    ===================== */
 
     if (
       request.method === "POST" &&
       url.pathname === "/interactions"
     ) {
       const valid =
-        await verify(
+        await verifyDiscordRequest(
           request,
           env
         );
 
       if (!valid) {
         return new Response(
-          "Invalid signature",
+          "Invalid request signature",
           {
             status: 401
           }
@@ -264,17 +431,21 @@ export default {
       const interaction =
         await request.json();
 
-      /* DISCORD PING */
+      /* ===================
+         DISCORD PING
+      =================== */
 
       if (
         interaction.type === 1
       ) {
-        return response({
+        return json({
           type: 1
         });
       }
 
-      /* SLASH COMMAND */
+      /* ===================
+         SLASH COMMAND
+      =================== */
 
       if (
         interaction.type === 2
@@ -286,6 +457,10 @@ export default {
           "Command:",
           command
         );
+
+        /* =================
+           GIVEAWAY
+        ================= */
 
         if (
           command ===
@@ -309,46 +484,393 @@ export default {
                 "winners"
             )?.value;
 
-          return interactionResponse(
-            [
-              "🎁 **ROBUX GIVEAWAY**",
-              "",
-              `**Prize:** ${prize}`,
-              `**Winners:** ${winners}`,
-              "",
-              "Klik tombol di bawah untuk claim.",
-              "",
-              "🛠️ Giveaway system is online."
-            ].join("\n")
+          const giveawayId =
+            `GW-${crypto.randomUUID()}`;
+
+          const userId =
+            interaction.member
+              ?.user?.id ||
+            interaction.user?.id ||
+            "unknown";
+
+          const guildId =
+            interaction.guild_id;
+
+          const channelId =
+            interaction.channel_id;
+
+          try {
+            /*
+             * Save giveaway first.
+             */
+            await env.DB
+              .prepare(
+                `
+                INSERT INTO giveaways (
+                  id,
+                  guild_id,
+                  channel_id,
+                  message_id,
+                  prize,
+                  winners,
+                  status,
+                  created_by,
+                  created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                `
+              )
+              .bind(
+                giveawayId,
+                guildId,
+                channelId,
+                null,
+                String(prize),
+                Number(winners),
+                "active",
+                userId,
+                new Date().toISOString()
+              )
+              .run();
+
+          } catch (error) {
+            console.error(
+              "D1 giveaway error:",
+              error
+            );
+
+            return json({
+              type: 4,
+              data: {
+                content:
+                  "❌ Gagal membuat giveaway di database."
+              }
+            });
+          }
+
+          /*
+           * Respond immediately to Discord.
+           */
+          const discordResponse =
+            json({
+              type: 4,
+
+              data: {
+                content: [
+                  "🎁 **ROBUX GIVEAWAY**",
+                  "",
+                  `**Prize:** ${prize}`,
+                  `**Winners:** ${winners}`,
+                  "",
+                  "Klik tombol di bawah untuk claim.",
+                  "",
+                  `ID: \`${giveawayId}\``
+                ].join("\n"),
+
+                components: [
+                  {
+                    type: 1,
+
+                    components: [
+                      {
+                        type: 2,
+                        style: 1,
+                        label:
+                          "🎁 Claim",
+                        custom_id:
+                          `claim:${giveawayId}`
+                      }
+                    ]
+                  }
+                ]
+              }
+            });
+
+          /*
+           * Setelah response dikirim,
+           * ambil message ID dari Discord
+           * dan simpan ke D1.
+           */
+          ctx.waitUntil(
+            (async () => {
+              try {
+                /*
+                 * Tunggu sedikit supaya
+                 * original response tersedia.
+                 */
+                await new Promise(
+                  resolve =>
+                    setTimeout(
+                      resolve,
+                      300
+                    )
+                );
+
+                const message =
+                  await getOriginalMessage(
+                    interaction,
+                    env
+                  );
+
+                await env.DB
+                  .prepare(
+                    `
+                    UPDATE giveaways
+                    SET message_id = ?
+                    WHERE id = ?
+                    `
+                  )
+                  .bind(
+                    message.id,
+                    giveawayId
+                  )
+                  .run();
+
+                console.log(
+                  "Giveaway message saved:",
+                  message.id
+                );
+
+              } catch (error) {
+                console.error(
+                  "Save message ID error:",
+                  error
+                );
+              }
+            })()
           );
+
+          return discordResponse;
         }
+
+        /* =================
+           GIVEAWAY END
+        ================= */
 
         if (
           command ===
           "giveaway-end"
         ) {
-          return interactionResponse(
-            "🔒 Giveaway ended."
-          );
+          const options =
+            interaction.data
+              ?.options || [];
+
+          const giveawayId =
+            options.find(
+              x =>
+                x.name === "id"
+            )?.value;
+
+          if (!giveawayId) {
+            return json({
+              type: 4,
+              data: {
+                content:
+                  "❌ Giveaway ID wajib diisi."
+              }
+            });
+          }
+
+          try {
+            const giveaway =
+              await getGiveaway(
+                giveawayId,
+                env
+              );
+
+            if (!giveaway) {
+              return json({
+                type: 4,
+                data: {
+                  content:
+                    "❌ Giveaway tidak ditemukan."
+                }
+              });
+            }
+
+            if (
+              giveaway.status !==
+              "active"
+            ) {
+              return json({
+                type: 4,
+                data: {
+                  content:
+                    "❌ Giveaway sudah tidak aktif."
+                }
+              });
+            }
+
+            /*
+             * Hapus pesan giveaway
+             * menggunakan akun BOT.
+             */
+            if (
+              giveaway.message_id &&
+              giveaway.channel_id
+            ) {
+              await deleteMessage(
+                giveaway.channel_id,
+                giveaway.message_id,
+                env
+              );
+            }
+
+            /*
+             * Update database.
+             */
+            await env.DB
+              .prepare(
+                `
+                UPDATE giveaways
+                SET status = ?
+                WHERE id = ?
+                `
+              )
+              .bind(
+                "ended",
+                giveawayId
+              )
+              .run();
+
+            return json({
+              type: 4,
+              data: {
+                content:
+                  `✅ Giveaway \`${giveawayId}\` berhasil diakhiri dan pesannya dihapus oleh bot.`
+              }
+            });
+
+          } catch (error) {
+            console.error(
+              "Giveaway end error:",
+              error
+            );
+
+            return json({
+              type: 4,
+              data: {
+                content:
+                  "❌ Gagal mengakhiri giveaway. Pastikan bot punya **Manage Messages**."
+              }
+            });
+          }
         }
+
+        /* =================
+           TICKET CLOSE
+        ================= */
 
         if (
           command ===
           "ticket-close"
         ) {
-          return interactionResponse(
-            "🔒 Ticket closed."
-          );
+          return json({
+            type: 4,
+            data: {
+              content:
+                "🔒 Sistem ticket-close akan kita pasang setelah Claim selesai."
+            }
+          });
         }
 
-        return interactionResponse(
-          "❌ Unknown command."
-        );
+        return json({
+          type: 4,
+          data: {
+            content:
+              "❌ Command tidak dikenal."
+          }
+        });
       }
 
-      return interactionResponse(
-        "❌ Unsupported interaction."
-      );
+      /* ===================
+         BUTTON
+      =================== */
+
+      if (
+        interaction.type === 3
+      ) {
+        const customId =
+          interaction.data
+            ?.custom_id || "";
+
+        /*
+         * CLAIM BUTTON
+         */
+        if (
+          customId.startsWith(
+            "claim:"
+          )
+        ) {
+          const giveawayId =
+            customId.substring(
+              6
+            );
+
+          const giveaway =
+            await getGiveaway(
+              giveawayId,
+              env
+            );
+
+          if (!giveaway) {
+            return json({
+              type: 4,
+              data: {
+                content:
+                  "❌ Giveaway tidak ditemukan.",
+                flags: 64
+              }
+            });
+          }
+
+          if (
+            giveaway.status !==
+            "active"
+          ) {
+            return json({
+              type: 4,
+              data: {
+                content:
+                  "❌ Giveaway sudah berakhir.",
+                flags: 64
+              }
+            });
+          }
+
+          return json({
+            type: 4,
+            data: {
+              content: [
+                "🎁 **CLAIM GIVEAWAY**",
+                "",
+                `Prize: **${giveaway.prize}**`,
+                "",
+                "Sistem claim/ticket sedang diproses."
+              ].join("\n"),
+
+              flags: 64
+            }
+          });
+        }
+
+        return json({
+          type: 4,
+          data: {
+            content:
+              "❌ Tombol tidak dikenal.",
+            flags: 64
+          }
+        });
+      }
+
+      return json({
+        type: 4,
+        data: {
+          content:
+            "❌ Interaction tidak didukung."
+        }
+      });
     }
 
     return new Response(
