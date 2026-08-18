@@ -18,11 +18,7 @@ CREATE TABLE IF NOT EXISTS claims (
     display_name TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'processing',
     created_at TEXT NOT NULL,
-
-    UNIQUE(giveaway_id, user_id),
-
-    FOREIGN KEY(giveaway_id)
-        REFERENCES giveaways(id)
+    UNIQUE(giveaway_id, user_id)
 );
 
 CREATE TABLE IF NOT EXISTS tickets (
