@@ -68,7 +68,9 @@ function response(data, status = 200) {
 ========================================================= */
 
 function hexToBytes(hex) {
-  const bytes = new Uint8Array(hex.length / 2);
+  const bytes = new Uint8Array(
+    hex.length / 2
+  );
 
   for (let i = 0; i < hex.length; i += 2) {
     bytes[i / 2] = parseInt(
@@ -86,10 +88,14 @@ function hexToBytes(hex) {
 
 async function verifyDiscord(request, env) {
   const signature =
-    request.headers.get("X-Signature-Ed25519");
+    request.headers.get(
+      "X-Signature-Ed25519"
+    );
 
   const timestamp =
-    request.headers.get("X-Signature-Timestamp");
+    request.headers.get(
+      "X-Signature-Timestamp"
+    );
 
   if (
     !signature ||
@@ -106,7 +112,9 @@ async function verifyDiscord(request, env) {
     const publicKey =
       await crypto.subtle.importKey(
         "raw",
-        hexToBytes(env.DISCORD_PUBLIC_KEY),
+        hexToBytes(
+          env.DISCORD_PUBLIC_KEY
+        ),
         {
           name: "Ed25519"
         },
@@ -122,6 +130,7 @@ async function verifyDiscord(request, env) {
         timestamp + body
       )
     );
+
   } catch (error) {
     console.error(
       "VERIFY ERROR:",
@@ -175,7 +184,6 @@ async function registerCommands(env) {
       env,
       {
         method: "PUT",
-
         body:
           JSON.stringify(COMMANDS)
       }
@@ -187,7 +195,8 @@ async function registerCommands(env) {
   let data;
 
   try {
-    data = JSON.parse(text);
+    data =
+      JSON.parse(text);
   } catch {
     data = text;
   }
@@ -205,7 +214,10 @@ async function registerCommands(env) {
    GET GIVEAWAY
 ========================================================= */
 
-async function getGiveaway(id, env) {
+async function getGiveaway(
+  id,
+  env
+) {
   return env.DB
     .prepare(
       `
@@ -276,24 +288,19 @@ async function createTicketChannel(
     );
   }
 
-  const username =
+  const discordUsername =
     user.username ||
     `user-${user.id}`;
 
   const safeName =
-    username
+    discordUsername
       .toLowerCase()
       .replace(
         /[^a-z0-9-]/g,
         "-"
       )
-      .slice(0, 45);
+      .slice(0, 35);
 
-  /*
-   * VIEW_CHANNEL
-   * SEND_MESSAGES
-   * READ_MESSAGE_HISTORY
-   */
   const permissions =
     "68608";
 
@@ -317,7 +324,8 @@ async function createTicketChannel(
     },
 
     {
-      id: env.DISCORD_APPLICATION_ID,
+      id:
+        env.DISCORD_APPLICATION_ID,
       type: 1,
       allow: permissions
     }
@@ -373,6 +381,67 @@ async function createTicketChannel(
 }
 
 /* =========================================================
+   CREATE CLAIM
+   IMPORTANT:
+   Tidak memakai channel_id karena schema claims kamu
+   tidak memiliki kolom channel_id.
+========================================================= */
+
+async function createClaim(
+  giveawayId,
+  user,
+  env
+) {
+  const existing =
+    await getClaim(
+      giveawayId,
+      user.id,
+      env
+    );
+
+  if (existing) {
+    return existing;
+  }
+
+  const username =
+    user.username ||
+    `user-${user.id}`;
+
+  const claimId =
+    crypto.randomUUID();
+
+  await env.DB
+    .prepare(
+      `
+      INSERT INTO claims (
+        id,
+        giveaway_id,
+        user_id,
+        username,
+        status,
+        created_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?)
+      `
+    )
+    .bind(
+      claimId,
+      giveawayId,
+      user.id,
+      username,
+      "open",
+      new Date().toISOString()
+    )
+    .run();
+
+  return await getClaim(
+    giveawayId,
+    user.id,
+    env
+  );
+}
+
+/* =========================================================
    SEND TICKET MESSAGE
 ========================================================= */
 
@@ -398,12 +467,10 @@ async function sendTicketMessage(
               `🎁 Prize: **${giveaway.prize}**`,
               `🏆 Winners: **${giveaway.winners}**`,
               "",
+              "### 🎮 Verifikasi Roblox",
+              "",
               "Silakan masukkan username Roblox kamu.",
-              "",
-              "Format:",
-              "`nanazpine` atau `@nanazpine`",
-              "",
-              "Tekan tombol di bawah untuk melanjutkan."
+              "Bot akan menampilkan preview profil Roblox sebelum claim dilanjutkan."
             ].join("\n"),
 
             components: [
@@ -426,20 +493,13 @@ async function sendTicketMessage(
       }
     );
 
-  const text =
-    await result.text();
-
   if (!result.ok) {
     throw new Error(
-      `Send ticket message failed: ${text}`
+      `Send ticket message failed: ${await result.text()}`
     );
   }
 
-  try {
-    return JSON.parse(text);
-  } catch {
-    return null;
-  }
+  return await result.json();
 }
 
 /* =========================================================
@@ -479,38 +539,7 @@ async function editInteraction(
 }
 
 /* =========================================================
-   GET ORIGINAL INTERACTION MESSAGE
-========================================================= */
-
-async function getOriginalInteractionMessage(
-  interaction,
-  env
-) {
-  const path =
-    `/webhooks/${env.DISCORD_APPLICATION_ID}` +
-    `/${interaction.token}` +
-    `/messages/@original`;
-
-  const result =
-    await discord(
-      path,
-      env,
-      {
-        method: "GET"
-      }
-    );
-
-  if (!result.ok) {
-    throw new Error(
-      `Get giveaway message failed: ${await result.text()}`
-    );
-  }
-
-  return result.json();
-}
-
-/* =========================================================
-   DELETE GIVEAWAY MESSAGE
+   DELETE GIVEAWAY
 ========================================================= */
 
 async function deleteGiveawayMessage(
@@ -546,31 +575,44 @@ async function deleteGiveawayMessage(
 }
 
 /* =========================================================
-   ROBLOX PROFILE
+   GET ORIGINAL GIVEAWAY MESSAGE
+========================================================= */
+
+async function getOriginalGiveawayMessage(
+  interaction,
+  env
+) {
+  const result =
+    await discord(
+      `/webhooks/${env.DISCORD_APPLICATION_ID}` +
+      `/${interaction.token}` +
+      `/messages/@original`,
+      env,
+      {
+        method: "GET"
+      }
+    );
+
+  if (!result.ok) {
+    throw new Error(
+      `Get giveaway message failed: ${await result.text()}`
+    );
+  }
+
+  return await result.json();
+}
+
+/* =========================================================
+   ROBLOX PROFILE BY USERNAME
 ========================================================= */
 
 async function getRobloxProfile(
   username
 ) {
-  /*
-   * Terima:
-   *
-   * nanazpine
-   * @nanazpine
-   *
-   * Keduanya diproses menjadi:
-   *
-   * nanazpine
-   */
-
   const cleanUsername =
-    String(username || "")
+    String(username)
       .trim()
-      .replace(/^@+/, "");
-
-  if (!cleanUsername) {
-    return null;
-  }
+      .replace(/^@/, "");
 
   const lookup =
     await fetch(
@@ -585,8 +627,9 @@ async function getRobloxProfile(
 
         body:
           JSON.stringify({
-            usernames:
-              [cleanUsername],
+            usernames: [
+              cleanUsername
+            ],
 
             excludeBannedUsers:
               false
@@ -595,14 +638,8 @@ async function getRobloxProfile(
     );
 
   if (!lookup.ok) {
-    console.error(
-      "ROBLOX LOOKUP:",
-      lookup.status,
-      await lookup.text()
-    );
-
     throw new Error(
-      "Roblox API gagal diakses."
+      `Roblox API error ${lookup.status}`
     );
   }
 
@@ -619,32 +656,48 @@ async function getRobloxProfile(
   const user =
     lookupData.data[0];
 
-  let avatarUrl =
-    null;
+  return await getRobloxProfileById(
+    user.id
+  );
+}
 
-  try {
-    const thumbnail =
-      await fetch(
-        `${ROBLOX_THUMBNAILS}/v1/users/avatar-headshot` +
-        `?userIds=${user.id}` +
-        `&size=150x150` +
-        `&format=Png` +
-        `&isCircular=false`
-      );
+/* =========================================================
+   ROBLOX PROFILE BY ID
+========================================================= */
 
-    if (thumbnail.ok) {
-      const thumbnailData =
-        await thumbnail.json();
-
-      avatarUrl =
-        thumbnailData.data?.[0]?.imageUrl ||
-        null;
-    }
-  } catch (error) {
-    console.error(
-      "ROBLOX AVATAR ERROR:",
-      error
+async function getRobloxProfileById(
+  userId
+) {
+  const userResponse =
+    await fetch(
+      `${ROBLOX_API}/v1/users/${userId}`
     );
+
+  if (!userResponse.ok) {
+    return null;
+  }
+
+  const user =
+    await userResponse.json();
+
+  const thumbnail =
+    await fetch(
+      `${ROBLOX_THUMBNAILS}/v1/users/avatar-headshot` +
+      `?userIds=${user.id}` +
+      `&size=150x150` +
+      `&format=Png` +
+      `&isCircular=false`
+    );
+
+  let avatarUrl = null;
+
+  if (thumbnail.ok) {
+    const thumbnailData =
+      await thumbnail.json();
+
+    avatarUrl =
+      thumbnailData.data?.[0]?.imageUrl ||
+      null;
   }
 
   return {
@@ -701,7 +754,7 @@ function showRobloxModal(
               required: true,
 
               placeholder:
-                "Contoh: nanazpine"
+                "Contoh: builderman"
             }
           ]
         }
@@ -723,7 +776,7 @@ function robloxPreview(
       "🎮 Apakah ini akun Roblox Anda?",
 
     description:
-      "Periksa profil di bawah sebelum melanjutkan claim.",
+      "Periksa profil berikut sebelum melanjutkan claim.",
 
     fields: [
       {
@@ -780,7 +833,9 @@ function robloxPreview(
           components: [
             {
               type: 2,
+
               style: 3,
+
               label:
                 "✅ Ya, itu saya",
 
@@ -790,9 +845,11 @@ function robloxPreview(
 
             {
               type: 2,
+
               style: 4,
+
               label:
-                "❌ Bukan",
+                "❌ Bukan, ganti username",
 
               custom_id:
                 `roblox-retry:${giveawayId}`
@@ -840,6 +897,33 @@ async function saveRobloxProfile(
       .run();
 
   return result;
+}
+
+/* =========================================================
+   DELETE CURRENT CHANNEL
+========================================================= */
+
+async function deleteChannel(
+  channelId,
+  env
+) {
+  const result =
+    await discord(
+      `/channels/${channelId}`,
+      env,
+      {
+        method: "DELETE"
+      }
+    );
+
+  if (
+    !result.ok &&
+    result.status !== 404
+  ) {
+    throw new Error(
+      `Delete ticket failed: ${await result.text()}`
+    );
+  }
 }
 
 /* =========================================================
@@ -931,9 +1015,7 @@ export default {
     ) {
       try {
         const commands =
-          await registerCommands(
-            env
-          );
+          await registerCommands(env);
 
         return response({
           success:
@@ -992,7 +1074,7 @@ export default {
       }
 
       /* ===================================================
-         SLASH COMMAND
+         SLASH COMMANDS
       =================================================== */
 
       if (
@@ -1006,8 +1088,7 @@ export default {
         =============================================== */
 
         if (
-          command ===
-          "giveaway"
+          command === "giveaway"
         ) {
           const options =
             interaction.data
@@ -1016,15 +1097,13 @@ export default {
           const prize =
             options.find(
               x =>
-                x.name ===
-                "prize"
+                x.name === "prize"
             )?.value;
 
           const winners =
             options.find(
               x =>
-                x.name ===
-                "winners"
+                x.name === "winners"
             )?.value;
 
           const giveawayId =
@@ -1035,14 +1114,6 @@ export default {
               ?.user?.id ||
             interaction.user?.id ||
             "unknown";
-
-          /*
-           * Simpan giveaway.
-           *
-           * message_id sementara NULL.
-           * Setelah Discord membuat message,
-           * kita ambil message ID dan UPDATE D1.
-           */
 
           try {
             await env.DB
@@ -1077,7 +1148,7 @@ export default {
 
           } catch (error) {
             console.error(
-              "GIVEAWAY D1 ERROR:",
+              "GIVEAWAY INSERT ERROR:",
               error
             );
 
@@ -1086,15 +1157,14 @@ export default {
 
               data: {
                 content:
-                  "❌ Gagal menyimpan giveaway."
+                  `❌ Gagal menyimpan giveaway.\n\n\`${error.message}\``
               }
             });
           }
 
           /*
-           * Response giveaway.
+           * Response langsung.
            */
-
           const result =
             response({
               type: 4,
@@ -1134,10 +1204,9 @@ export default {
             });
 
           /*
-           * Setelah interaction response dikirim,
-           * ambil original message dan simpan ID.
+           * Ambil message ID setelah
+           * response dibuat Discord.
            */
-
           ctx.waitUntil(
             (async () => {
               try {
@@ -1145,37 +1214,51 @@ export default {
                   resolve =>
                     setTimeout(
                       resolve,
-                      500
+                      700
                     )
                 );
 
                 const message =
-                  await getOriginalInteractionMessage(
-                    interaction,
-                    env
+                  await discord(
+                    `/webhooks/${env.DISCORD_APPLICATION_ID}` +
+                    `/${interaction.token}` +
+                    `/messages/@original`,
+                    env,
+                    {
+                      method:
+                        "GET"
+                    }
                   );
 
-                if (
-                  message?.id
-                ) {
-                  await env.DB
-                    .prepare(
-                      `
-                      UPDATE giveaways
-                      SET message_id = ?
-                      WHERE id = ?
-                      `
-                    )
-                    .bind(
-                      message.id,
-                      giveawayId
-                    )
-                    .run();
+                if (!message.ok) {
+                  console.error(
+                    "GET GIVEAWAY MESSAGE:",
+                    await message.text()
+                  );
+
+                  return;
                 }
+
+                const messageData =
+                  await message.json();
+
+                await env.DB
+                  .prepare(
+                    `
+                    UPDATE giveaways
+                    SET message_id = ?
+                    WHERE id = ?
+                    `
+                  )
+                  .bind(
+                    messageData.id,
+                    giveawayId
+                  )
+                  .run();
 
               } catch (error) {
                 console.error(
-                  "SAVE GIVEAWAY MESSAGE ID ERROR:",
+                  "SAVE GIVEAWAY MESSAGE ID:",
                   error
                 );
               }
@@ -1190,8 +1273,7 @@ export default {
         =============================================== */
 
         if (
-          command ===
-          "giveaway-end"
+          command === "giveaway-end"
         ) {
           const options =
             interaction.data
@@ -1200,8 +1282,7 @@ export default {
           const giveawayId =
             options.find(
               x =>
-                x.name ===
-                "id"
+                x.name === "id"
             )?.value;
 
           const giveaway =
@@ -1252,7 +1333,7 @@ export default {
                   env,
                   {
                     content:
-                      `✅ Giveaway \`${giveawayId}\` berhasil diakhiri dan pesan giveaway dihapus.`
+                      `✅ Giveaway \`${giveawayId}\` berhasil diakhiri dan pesan giveaway telah dihapus.`
                   }
                 );
 
@@ -1282,8 +1363,7 @@ export default {
         =============================================== */
 
         if (
-          command ===
-          "ticket-close"
+          command === "ticket-close"
         ) {
           const channelId =
             interaction.channel_id;
@@ -1291,7 +1371,6 @@ export default {
           const deferred =
             response({
               type: 5,
-
               data: {
                 flags: 64
               }
@@ -1300,55 +1379,92 @@ export default {
           ctx.waitUntil(
             (async () => {
               try {
-                const ticket =
-                  await env.DB
-                    .prepare(
-                      `
-                      SELECT *
-                      FROM tickets
-                      WHERE channel_id = ?
-                      AND status = 'open'
-                      LIMIT 1
-                      `
-                    )
-                    .bind(
-                      channelId
-                    )
-                    .first();
+                /*
+                 * Cari ticket berdasarkan topic channel.
+                 */
+                const channel =
+                  await discord(
+                    `/channels/${channelId}`,
+                    env,
+                    {
+                      method:
+                        "GET"
+                    }
+                  );
 
-                if (!ticket) {
+                if (!channel.ok) {
+                  throw new Error(
+                    "Channel tidak ditemukan."
+                  );
+                }
+
+                const channelData =
+                  await channel.json();
+
+                const topic =
+                  channelData.topic ||
+                  "";
+
+                if (
+                  !topic.startsWith(
+                    "Giveaway "
+                  )
+                ) {
                   await editInteraction(
                     interaction,
                     env,
                     {
                       content:
-                        "❌ Channel ini bukan ticket aktif."
+                        "❌ Channel ini bukan ticket giveaway."
                     }
                   );
 
                   return;
                 }
 
-                await env.DB
-                  .prepare(
-                    `
-                    UPDATE tickets
-                    SET status = 'closed'
-                    WHERE id = ?
-                    `
-                  )
-                  .bind(
-                    ticket.id
-                  )
-                  .run();
+                /*
+                 * Tutup claim jika ada.
+                 */
+                const userMatch =
+                  topic.match(
+                    /User (\d+)/
+                  );
 
-                await editInteraction(
-                  interaction,
-                  env,
-                  {
-                    content:
-                      "🔒 Ticket berhasil ditutup."
+                if (userMatch) {
+                  const userId =
+                    userMatch[1];
+
+                  const giveawayMatch =
+                    topic.match(
+                      /Giveaway (GW-[^ ]+)/
+                    );
+
+                  if (
+                    giveawayMatch
+                  ) {
+                    await env.DB
+                      .prepare(
+                        `
+                        UPDATE claims
+                        SET status = 'closed'
+                        WHERE giveaway_id = ?
+                        AND user_id = ?
+                        `
+                      )
+                      .bind(
+                        giveawayMatch[1],
+                        userId
+                      )
+                      .run();
                   }
+                }
+
+                /*
+                 * Hapus channel ticket.
+                 */
+                await deleteChannel(
+                  channelId,
+                  env
                 );
 
               } catch (error) {
@@ -1362,7 +1478,7 @@ export default {
                   env,
                   {
                     content:
-                      `❌ ${error.message}`
+                      `❌ Gagal menutup ticket.\n\n\`${error.message}\``
                   }
                 );
               }
@@ -1390,7 +1506,7 @@ export default {
           interaction.user;
 
         /* ===============================================
-           CLAIM BUTTON
+           CLAIM GIVEAWAY
         =============================================== */
 
         if (
@@ -1416,7 +1532,6 @@ export default {
               data: {
                 content:
                   "❌ Giveaway tidak ditemukan.",
-
                 flags: 64
               }
             });
@@ -1431,41 +1546,38 @@ export default {
 
               data: {
                 content:
-                  "❌ Giveaway sudah berakhir.",
-
+                  "❌ Giveaway ini sudah berakhir.",
                 flags: 64
               }
             });
           }
 
-          const existingClaim =
+          const existing =
             await getClaim(
               giveawayId,
               user.id,
               env
             );
 
-          if (existingClaim) {
+          if (existing) {
             return response({
               type: 4,
 
               data: {
                 content:
-                  `❌ Kamu sudah melakukan claim giveaway ini.\n\nTicket: <#${existingClaim.channel_id}>`,
-
+                  "⚠️ Kamu sudah memiliki ticket untuk giveaway ini.",
                 flags: 64
               }
             });
           }
 
           /*
-           * Buat ticket.
+           * Discord harus mendapat response
+           * dalam 3 detik.
            */
-
           const deferred =
             response({
               type: 5,
-
               data: {
                 flags: 64
               }
@@ -1474,6 +1586,21 @@ export default {
           ctx.waitUntil(
             (async () => {
               try {
+                /*
+                 * Buat claim dulu.
+                 *
+                 * username WAJIB diisi karena
+                 * schema D1 kamu NOT NULL.
+                 */
+                await createClaim(
+                  giveawayId,
+                  user,
+                  env
+                );
+
+                /*
+                 * Buat ticket.
+                 */
                 const ticket =
                   await createTicketChannel(
                     interaction,
@@ -1483,68 +1610,8 @@ export default {
                   );
 
                 /*
-                 * Simpan claim.
+                 * Kirim pesan ticket.
                  */
-
-                const claimId =
-                  crypto.randomUUID();
-
-                await env.DB
-                  .prepare(
-                    `
-                    INSERT INTO claims (
-                      id,
-                      giveaway_id,
-                      user_id,
-                      channel_id,
-                      status,
-                      created_at
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    `
-                  )
-                  .bind(
-                    claimId,
-                    giveawayId,
-                    user.id,
-                    ticket.id,
-                    "pending",
-                    new Date().toISOString()
-                  )
-                  .run();
-
-                /*
-                 * Simpan ticket.
-                 */
-
-                await env.DB
-                  .prepare(
-                    `
-                    INSERT INTO tickets (
-                      id,
-                      giveaway_id,
-                      user_id,
-                      channel_id,
-                      status,
-                      created_at
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    `
-                  )
-                  .bind(
-                    claimId,
-                    giveawayId,
-                    user.id,
-                    ticket.id,
-                    "open",
-                    new Date().toISOString()
-                  )
-                  .run();
-
-                /*
-                 * Kirim pesan pertama.
-                 */
-
                 await sendTicketMessage(
                   ticket.id,
                   giveaway,
@@ -1552,12 +1619,52 @@ export default {
                   env
                 );
 
+                /*
+                 * Simpan channel ID di tabel tickets
+                 * jika tabel tickets tersedia.
+                 */
+                try {
+                  await env.DB
+                    .prepare(
+                      `
+                      INSERT INTO tickets (
+                        id,
+                        giveaway_id,
+                        user_id,
+                        channel_id,
+                        status,
+                        created_at
+                      )
+                      VALUES (?, ?, ?, ?, ?, ?)
+                      `
+                    )
+                    .bind(
+                      crypto.randomUUID(),
+                      giveawayId,
+                      user.id,
+                      ticket.id,
+                      "open",
+                      new Date().toISOString()
+                    )
+                    .run();
+
+                } catch (ticketDbError) {
+                  /*
+                   * Jangan hapus ticket hanya karena
+                   * struktur tickets berbeda.
+                   */
+                  console.error(
+                    "TICKET D1 WARNING:",
+                    ticketDbError
+                  );
+                }
+
                 await editInteraction(
                   interaction,
                   env,
                   {
                     content:
-                      `🎟️ Ticket berhasil dibuat: <#${ticket.id}>`
+                      `✅ Ticket berhasil dibuat: <#${ticket.id}>`
                   }
                 );
 
@@ -1583,7 +1690,7 @@ export default {
         }
 
         /* ===============================================
-           ROBLOX INPUT BUTTON
+           ROBLOX INPUT
         =============================================== */
 
         if (
@@ -1594,6 +1701,25 @@ export default {
           const giveawayId =
             customId.substring(
               "roblox-input:".length
+            );
+
+          return showRobloxModal(
+            giveawayId
+          );
+        }
+
+        /* ===============================================
+           ROBLOX RETRY
+        =============================================== */
+
+        if (
+          customId.startsWith(
+            "roblox-retry:"
+          )
+        ) {
+          const giveawayId =
+            customId.substring(
+              "roblox-retry:".length
             );
 
           return showRobloxModal(
@@ -1619,188 +1745,102 @@ export default {
           const robloxId =
             parts[2];
 
-          const claim =
-            await getClaim(
+          const giveaway =
+            await getGiveaway(
               giveawayId,
-              user.id,
               env
             );
 
-          if (!claim) {
+          if (!giveaway) {
             return response({
               type: 4,
 
               data: {
                 content:
-                  "❌ Claim tidak ditemukan.",
-
+                  "❌ Giveaway tidak ditemukan.",
                 flags: 64
               }
             });
           }
 
-          const deferred =
-            response({
-              type: 5,
+          /*
+           * Ambil profil Roblox lagi
+           * berdasarkan User ID.
+           */
+          const profile =
+            await getRobloxProfileById(
+              robloxId
+            );
+
+          if (!profile) {
+            return response({
+              type: 4,
 
               data: {
+                content:
+                  "❌ Profil Roblox tidak dapat ditemukan lagi. Silakan ulangi.",
                 flags: 64
               }
             });
+          }
 
-          ctx.waitUntil(
-            (async () => {
-              try {
-                /*
-                 * Ambil ulang profil berdasarkan ID
-                 * supaya data tidak bisa dimanipulasi
-                 * dari custom_id.
-                 */
-
-                const lookup =
-                  await fetch(
-                    `${ROBLOX_API}/v1/users/${robloxId}`
-                  );
-
-                if (!lookup.ok) {
-                  throw new Error(
-                    "Profil Roblox tidak dapat diverifikasi."
-                  );
-                }
-
-                const robloxUser =
-                  await lookup.json();
-
-                let avatarUrl =
-                  null;
-
-                try {
-                  const thumbnail =
-                    await fetch(
-                      `${ROBLOX_THUMBNAILS}/v1/users/avatar-headshot` +
-                      `?userIds=${robloxId}` +
-                      `&size=150x150` +
-                      `&format=Png` +
-                      `&isCircular=false`
-                    );
-
-                  if (
-                    thumbnail.ok
-                  ) {
-                    const thumbnailData =
-                      await thumbnail.json();
-
-                    avatarUrl =
-                      thumbnailData.data?.[0]?.imageUrl ||
-                      null;
-                  }
-                } catch {}
-
-                const profile = {
-                  id:
-                    String(robloxUser.id),
-
-                  username:
-                    robloxUser.name,
-
-                  displayName:
-                    robloxUser.displayName,
-
-                  avatarUrl
-                };
-
-                await saveRobloxProfile(
-                  giveawayId,
-                  user.id,
-                  profile,
-                  env
-                );
-
-                await discord(
-                  `/channels/${claim.channel_id}/messages`,
-                  env,
-                  {
-                    method: "POST",
-
-                    body:
-                      JSON.stringify({
-                        content: [
-                          "✅ **Roblox Account Confirmed**",
-                          "",
-                          `👤 Discord: <@${user.id}>`,
-                          `🎮 Username: **@${profile.username}**`,
-                          `✨ Display Name: **${profile.displayName}**`,
-                          `🆔 Roblox ID: **${profile.id}**`,
-                          "",
-                          "⏳ Claim kamu sudah dikirim ke staff.",
-                          "Silakan tunggu proses pemberian Robux."
-                        ].join("\n"),
-
-                        embeds:
-                          profile.avatarUrl
-                            ? [
-                                {
-                                  title:
-                                    "Roblox Profile",
-
-                                  thumbnail: {
-                                    url:
-                                      profile.avatarUrl
-                                  }
-                                }
-                              ]
-                            : []
-                      })
-                  }
-                );
-
-                await editInteraction(
-                  interaction,
-                  env,
-                  {
-                    content:
-                      "✅ Akun Roblox berhasil dikonfirmasi."
-                  }
-                );
-
-              } catch (error) {
-                console.error(
-                  "ROBLOX CONFIRM ERROR:",
-                  error
-                );
-
-                await editInteraction(
-                  interaction,
-                  env,
-                  {
-                    content:
-                      `❌ Gagal memverifikasi akun Roblox.\n\n\`${error.message}\``
-                  }
-                );
-              }
-            })()
-          );
-
-          return deferred;
-        }
-
-        /* ===============================================
-           ROBLOX RETRY
-        =============================================== */
-
-        if (
-          customId.startsWith(
-            "roblox-retry:"
-          )
-        ) {
-          const giveawayId =
-            customId.substring(
-              "roblox-retry:".length
+          try {
+            await saveRobloxProfile(
+              giveawayId,
+              user.id,
+              profile,
+              env
             );
 
-          return showRobloxModal(
-            giveawayId
-          );
+            return response({
+              type: 4,
+
+              data: {
+                content: [
+                  "✅ **Roblox berhasil dikonfirmasi!**",
+                  "",
+                  `👤 Username: **@${profile.username}**`,
+                  `📛 Display Name: **${profile.displayName}**`,
+                  `🆔 User ID: **${profile.id}**`,
+                  "",
+                  "🎁 Data claim sudah tersimpan.",
+                  "Silakan tunggu staff memproses hadiah."
+                ].join("\n"),
+
+                embeds:
+                  profile.avatarUrl
+                    ? [
+                        {
+                          title:
+                            "Roblox Profile",
+                          thumbnail: {
+                            url:
+                              profile.avatarUrl
+                          }
+                        }
+                      ]
+                    : [],
+
+                components: []
+              }
+            });
+
+          } catch (error) {
+            console.error(
+              "SAVE ROBLOX ERROR:",
+              error
+            );
+
+            return response({
+              type: 4,
+
+              data: {
+                content:
+                  `❌ Gagal menyimpan data Roblox.\n\n\`${error.message}\``,
+                flags: 64
+              }
+            });
+          }
         }
       }
 
@@ -1814,10 +1854,6 @@ export default {
         const customId =
           interaction.data
             ?.custom_id || "";
-
-        /* ===============================================
-           ROBLOX MODAL SUBMIT
-        =============================================== */
 
         if (
           customId.startsWith(
@@ -1847,132 +1883,91 @@ export default {
                 "roblox_username"
               ) {
                 username =
-                  component.value ||
-                  "";
+                  component.value;
               }
             }
           }
 
-          /*
-           * Bersihkan username.
-           *
-           * @nanazpine
-           * menjadi:
-           *
-           * nanazpine
-           */
-
-          const cleanUsername =
-            String(username)
-              .trim()
-              .replace(/^@+/, "");
-
-          if (
-            !cleanUsername
-          ) {
+          if (!username) {
             return response({
               type: 4,
 
               data: {
                 content:
                   "❌ Username Roblox kosong.",
-
                 flags: 64
               }
             });
           }
 
-          const deferred =
-            response({
-              type: 5,
+          /*
+           * Bersihkan @ jika user mengetik
+           * @Username.
+           */
+          username =
+            String(username)
+              .trim()
+              .replace(
+                /^@/,
+                ""
+              );
+
+          try {
+            const profile =
+              await getRobloxProfile(
+                username
+              );
+
+            if (!profile) {
+              return response({
+                type: 4,
+
+                data: {
+                  content:
+                    `❌ Username Roblox **@${username}** tidak ditemukan.\n\nPastikan username yang dimasukkan adalah **username asli Roblox**, bukan Display Name.`,
+                  flags: 64
+                }
+              });
+            }
+
+            return robloxPreview(
+              profile,
+              giveawayId
+            );
+
+          } catch (error) {
+            console.error(
+              "ROBLOX LOOKUP ERROR:",
+              error
+            );
+
+            return response({
+              type: 4,
 
               data: {
+                content:
+                  `❌ Gagal mencari akun Roblox.\n\n\`${error.message}\``,
                 flags: 64
               }
             });
-
-          ctx.waitUntil(
-            (async () => {
-              try {
-                const profile =
-                  await getRobloxProfile(
-                    cleanUsername
-                  );
-
-                if (!profile) {
-                  await editInteraction(
-                    interaction,
-                    env,
-                    {
-                      content:
-                        `❌ Username Roblox **@${cleanUsername}** tidak ditemukan.\n\nPastikan username benar, lalu coba lagi.`
-                    }
-                  );
-
-                  return;
-                }
-
-                /*
-                 * Tampilkan preview.
-                 */
-
-                const preview =
-                  robloxPreview(
-                    profile,
-                    giveawayId
-                  );
-
-                await editInteraction(
-                  interaction,
-                  env,
-                  preview.data
-                );
-
-              } catch (error) {
-                console.error(
-                  "ROBLOX SEARCH ERROR:",
-                  error
-                );
-
-                await editInteraction(
-                  interaction,
-                  env,
-                  {
-                    content:
-                      `❌ Gagal mencari akun Roblox.\n\n\`${error.message}\``
-                  }
-                );
-              }
-            })()
-          );
-
-          return deferred;
+          }
         }
       }
-
-      /* ===================================================
-         UNKNOWN INTERACTION
-      =================================================== */
 
       return response({
         type: 4,
 
         data: {
           content:
-            "❌ Interaksi tidak dikenali.",
-
+            "❌ Interaction tidak dikenali.",
           flags: 64
         }
       });
     }
 
-    /* =====================================================
-       NOT FOUND
-    ===================================================== */
-
     return response({
-      error:
-        "Not found"
+      status:
+        "not_found"
     }, 404);
   }
 };
